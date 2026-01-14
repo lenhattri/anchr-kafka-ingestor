@@ -16,18 +16,27 @@ services:
     ports:
       - "9092:9092"
 
-  mosquitto:
-    image: eclipse-mosquitto:2
+  emqx:
+    image: emqx/emqx:5.3.2
     ports:
       - "1883:1883"
+      - "8083:8083" # WebSocket
+      - "8084:8084" # WebSocket SSL
+      - "18083:18083" # Dashboard
+    environment:
+      - EMQX_ALLOW_ANONYMOUS=true
+      - EMQX_LOADED_PLUGINS=emqx_recon,emqx_retainer,emqx_management,emqx_dashboard
     volumes:
-      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - emqx-data:/opt/emqx/data
 
   ingestor:
     build: .
-    env_file: .env
+    env_file: .env.example
     depends_on:
       - kafka
-      - mosquitto
+      - emqx
     ports:
       - "8080:8080"
+
+volumes:
+  emqx-data:
