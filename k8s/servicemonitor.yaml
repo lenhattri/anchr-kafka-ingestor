@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: anchr-kafka-ingestor
+  labels:
+    app: anchr-kafka-ingestor
+spec:
+  selector:
+    matchLabels:
+      app: anchr-kafka-ingestor
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
