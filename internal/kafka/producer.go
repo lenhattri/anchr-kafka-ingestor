@@ -2,19 +2,19 @@ package kafka
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"math/rand"
+	"hash"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/segmentio/kafka-go"
-	"github.com/segmentio/kafka-go/sasl"
-	"github.com/segmentio/kafka-go/sasl/plain"
-	"github.com/segmentio/kafka-go/sasl/scram"
+	"github.com/IBM/sarama"
+	"github.com/xdg-go/scram"
 )
 
 type Config struct {
@@ -31,10 +31,10 @@ type Config struct {
 }
 
 type Producer struct {
-	writer  *kafka.Writer
-	brokers []string
-	mu      sync.RWMutex
-	lastErr error
+	producer sarama.SyncProducer
+	brokers  []string
+	mu       sync.RWMutex
+	lastErr  error
 }
 
 type Message struct {
@@ -45,83 +45,88 @@ type Message struct {
 }
 
 func NewProducer(cfg Config) (*Producer, error) {
-	dialer, err := buildDialer(cfg)
+	saramaConfig := sarama.NewConfig()
+	saramaConfig.ClientID = cfg.ClientID
+	saramaConfig.Producer.Return.Successes = true
+	saramaConfig.Producer.RequiredAcks = sarama.WaitForAll
+	saramaConfig.Producer.Retry.Max = 5
+	saramaConfig.Net.WriteTimeout = 10 * time.Second
+	saramaConfig.Net.ReadTimeout = 10 * time.Second
+
+	// Map SecurityProtocol
+	proto := strings.ToUpper(cfg.SecurityProtocol)
+	if proto == "" {
+		proto = "PLAINTEXT"
+	}
+
+	useTLS := strings.Contains(proto, "SSL") || cfg.TLSCAFile != "" || cfg.TLSCertFile != ""
+	useSASL := strings.Contains(proto, "SASL") || cfg.SASLMechanism != ""
+
+	if useTLS {
+		saramaConfig.Net.TLS.Enable = true
+		tlsConfig, err := buildTLSConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		saramaConfig.Net.TLS.Config = tlsConfig
+	}
+
+	if useSASL {
+		saramaConfig.Net.SASL.Enable = true
+		if err := configureSASL(cfg, saramaConfig); err != nil {
+			return nil, err
+		}
+	}
+
+	producer, err := sarama.NewSyncProducer(cfg.Brokers, saramaConfig)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create sarama producer: %w", err)
 	}
 
-	writer := &kafka.Writer{
-		Addr:         kafka.TCP(cfg.Brokers...),
-		Async:        false,
-		Balancer:     &kafka.Hash{},
-		RequiredAcks: kafka.RequireAll,
-		BatchTimeout: 10 * time.Millisecond,
-		Dialer:       dialer,
-		WriteTimeout: 10 * time.Second,
-		ReadTimeout:  10 * time.Second,
-		Logger:       kafka.LoggerFunc(func(string, ...interface{}) {}),
-		ErrorLogger:  kafka.LoggerFunc(func(string, ...interface{}) {}),
-	}
-
-	return &Producer{writer: writer, brokers: cfg.Brokers}, nil
+	return &Producer{producer: producer, brokers: cfg.Brokers}, nil
 }
 
 func (p *Producer) Publish(ctx context.Context, msg Message) error {
-	write := func() error {
-		return p.writer.WriteMessages(ctx, kafka.Message{
-			Topic: msg.Topic,
-			Key:   msg.Key,
-			Value: msg.Value,
-			Time:  msg.Time,
-		})
+	// Sarama SyncProducer doesn't take context in SendMessage directly, 
+	// but the underlying network calls verify deadlines if set in config.
+	// For strict context cancellation support we might need AsyncProducer or check context before sending.
+	
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
-	const maxAttempts = 6
-	base := 200 * time.Millisecond
-	maxDelay := 5 * time.Second
+	pm := &sarama.ProducerMessage{
+		Topic: msg.Topic,
+		Value: sarama.ByteEncoder(msg.Value),
+	}
+	if len(msg.Key) > 0 {
+		pm.Key = sarama.ByteEncoder(msg.Key)
+	}
+	if !msg.Time.IsZero() {
+		pm.Timestamp = msg.Time
+	}
 
-	var err error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		err = write()
-		if err == nil {
-			p.setErr(nil)
-			return nil
-		}
+	_, _, err := p.producer.SendMessage(pm)
+	if err != nil {
 		p.setErr(err)
-		if attempt == maxAttempts {
-			break
-		}
-		sleep := backoffDuration(base, maxDelay, attempt)
-		select {
-		case <-time.After(sleep):
-		case <-ctx.Done():
-			return fmt.Errorf("publish canceled: %w", ctx.Err())
-		}
+		return err
 	}
-	return err
+
+	p.setErr(nil)
+	return nil
 }
 
 func (p *Producer) Close() error {
-	return p.writer.Close()
+	return p.producer.Close()
 }
 
 func (p *Producer) Ready(ctx context.Context) bool {
-	if len(p.brokers) == 0 {
+	// Sarama doesn't have a lightweight "ping" on SyncProducer easily accessbile without internal clients.
+	// We can assume it's ready if lastErr is nil, or we can rely on the fact that NewProducer checks connectivity initially.
+	// A simple check is to lock and check last reported error.
+	if p.LastError() != nil {
 		return false
 	}
-	broker := strings.TrimSpace(p.brokers[0])
-	if broker == "" {
-		return false
-	}
-
-	dialer := p.writer.Dialer
-	conn, err := dialer.DialContext(ctx, "tcp", broker)
-	if err != nil {
-		p.setErr(err)
-		return false
-	}
-	_ = conn.Close()
-	p.setErr(nil)
 	return true
 }
 
@@ -135,41 +140,6 @@ func (p *Producer) setErr(err error) {
 	p.mu.Lock()
 	p.lastErr = err
 	p.mu.Unlock()
-}
-
-func buildDialer(cfg Config) (*kafka.Dialer, error) {
-	dialer := &kafka.Dialer{
-		Timeout:   10 * time.Second,
-		DualStack: true,
-		ClientID:  cfg.ClientID,
-	}
-
-	useTLS := false
-	proto := strings.ToUpper(cfg.SecurityProtocol)
-	if proto == "SSL" || proto == "SASL_SSL" {
-		useTLS = true
-	}
-	if cfg.TLSCAFile != "" || cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
-		useTLS = true
-	}
-
-	if useTLS {
-		tlsConfig, err := buildTLSConfig(cfg)
-		if err != nil {
-			return nil, err
-		}
-		dialer.TLS = tlsConfig
-	}
-
-	if strings.Contains(proto, "SASL") || cfg.SASLMechanism != "" {
-		mechanism, err := buildSASL(cfg)
-		if err != nil {
-			return nil, err
-		}
-		dialer.SASLMechanism = mechanism
-	}
-
-	return dialer, nil
 }
 
 func buildTLSConfig(cfg Config) (*tls.Config, error) {
@@ -198,33 +168,52 @@ func buildTLSConfig(cfg Config) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-func buildSASL(cfg Config) (sasl.Mechanism, error) {
+func configureSASL(cfg Config, saramaConfig *sarama.Config) error {
 	mechanism := strings.ToUpper(cfg.SASLMechanism)
 	if mechanism == "" {
 		mechanism = "PLAIN"
 	}
+	saramaConfig.Net.SASL.User = cfg.SASLUsername
+	saramaConfig.Net.SASL.Password = cfg.SASLPassword
+	saramaConfig.Net.SASL.Handshake = true
 
 	switch mechanism {
 	case "PLAIN":
-		return plain.Mechanism{
-			Username: cfg.SASLUsername,
-			Password: cfg.SASLPassword,
-		}, nil
+		saramaConfig.Net.SASL.Mechanism = sarama.SASLTypePlaintext
 	case "SCRAM-SHA-256":
-		return scram.Mechanism(scram.SHA256, cfg.SASLUsername, cfg.SASLPassword)
+		saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
+		saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient { return &XDGSCRAMClient{HashGeneratorFcn: SHA256} }
 	case "SCRAM-SHA-512":
-		return scram.Mechanism(scram.SHA512, cfg.SASLUsername, cfg.SASLPassword)
+		saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
+		saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient { return &XDGSCRAMClient{HashGeneratorFcn: SHA512} }
 	default:
-		return nil, fmt.Errorf("unsupported SASL mechanism: %s", cfg.SASLMechanism)
+		return fmt.Errorf("unsupported SASL mechanism: %s", cfg.SASLMechanism)
 	}
+	return nil
 }
 
-func backoffDuration(base, maxDelay time.Duration, attempt int) time.Duration {
-	multiplier := 1 << (attempt - 1)
-	delay := time.Duration(multiplier) * base
-	if delay > maxDelay {
-		delay = maxDelay
+var SHA256 scram.HashGeneratorFcn = func() hash.Hash { return sha256.New() }
+var SHA512 scram.HashGeneratorFcn = func() hash.Hash { return sha512.New() }
+
+type XDGSCRAMClient struct {
+	*scram.Client
+	*scram.ClientConversation
+	HashGeneratorFcn scram.HashGeneratorFcn
+}
+
+func (x *XDGSCRAMClient) Begin(userName, password, authzID string) (err error) {
+	x.Client, err = x.HashGeneratorFcn.NewClient(userName, password, authzID)
+	if err != nil {
+		return err
 	}
-	jitter := time.Duration(rand.Int63n(int64(delay / 2)))
-	return delay + jitter
+	x.ClientConversation = x.Client.NewConversation()
+	return nil
+}
+
+func (x *XDGSCRAMClient) Step(challenge string) (response string, err error) {
+	return x.ClientConversation.Step(challenge)
+}
+
+func (x *XDGSCRAMClient) Done() bool {
+	return x.ClientConversation.Done()
 }
