@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anchr-kafka-ingestor
+  labels:
+    app: anchr-kafka-ingestor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: anchr-kafka-ingestor
+  template:
+    metadata:
+      labels:
+        app: anchr-kafka-ingestor
+    spec:
+      containers:
+        - name: anchr-kafka-ingestor
+          image: your-registry/anchr-kafka-ingestor:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: anchr-kafka-ingestor
+            - secretRef:
+                name: anchr-kafka-ingestor
+          ports:
+            - containerPort: 8080
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

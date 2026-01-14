@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: anchr-kafka-ingestor
+  labels:
+    app: anchr-kafka-ingestor
+spec:
+  selector:
+    app: anchr-kafka-ingestor
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
