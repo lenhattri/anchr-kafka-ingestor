@@ -23,7 +23,7 @@ func TestValidateEnvelope(t *testing.T) {
 	info := TopicInfo{TenantID: "tenant-a", StationID: "station-b", PumpID: "pump-c", DeviceID: "station-b:pump-c"}
 	env := Envelope{
 		Schema:        "anchr",
-		SchemaVersion: "1",
+		SchemaVersion: 1,
 		MessageID:     "msg-1",
 		Type:          "telemetry",
 		TenantID:      "tenant-a",

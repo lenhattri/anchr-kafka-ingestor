@@ -16,7 +16,7 @@ type TopicInfo struct {
 
 type Envelope struct {
 	Schema        string          `json:"schema"`
-	SchemaVersion string          `json:"schema_version"`
+	SchemaVersion interface{}     `json:"schema_version"`
 	MessageID     string          `json:"message_id"`
 	Type          string          `json:"type"`
 	TenantID      string          `json:"tenant_id"`
@@ -64,7 +64,7 @@ func ValidateEnvelope(env Envelope, info TopicInfo) error {
 	if env.Schema == "" {
 		return fmt.Errorf("missing schema")
 	}
-	if env.SchemaVersion == "" {
+	if env.SchemaVersion == nil {
 		return fmt.Errorf("missing schema_version")
 	}
 	if env.MessageID == "" {
