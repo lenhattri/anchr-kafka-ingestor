@@ -1,12 +1,14 @@
 # Default values for kafka-ingestor.
 
 image:
-  repository: anchr-kafka-ingestor
+  repository: lenhattri/anchr-kafka-ingestor
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
 
 fullnameOverride: "anchr-kafka-ingestor"
+
+replicaCount: 2
 
 service:
   type: ClusterIP
@@ -15,11 +17,18 @@ service:
 
 resources:
   requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
     cpu: 500m
     memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
 
 serviceMonitor:
   enabled: true
@@ -29,16 +38,27 @@ serviceMonitor:
 env:
   LOG_LEVEL: info
   HTTP_ADDR: ":8080"
-  INGEST_BUFFER_SIZE: "1000"
+  INGEST_BUFFER_SIZE: "20000"
+  INGEST_WORKERS: "8"
+  INGEST_WORKER_BUFFER_SIZE: "2000"
+  INGEST_BATCH_SIZE: "500"
+  INGEST_BATCH_LINGER_MS: "5"
   MQTT_BROKER_HOST: "emqx.iot.svc.cluster.local"
   MQTT_BROKER_PORT: "1883"
   MQTT_USE_TLS: "false"
   MQTT_CLIENT_ID: "anchr-kafka-ingestor"
   MQTT_QOS: "1"
   MQTT_TOPIC_PREFIX: "anchr/v1"
+  MQTT_SHARED_SUBSCRIPTION_GROUP: "anchr-kafka-ingestor"
+  MQTT_ORDER_MATTERS: "false"
   KAFKA_BROKERS: "kafka.data.svc.cluster.local:19092"
   KAFKA_CLIENT_ID: "anchr-kafka-ingestor"
   KAFKA_SECURITY_PROTOCOL: "PLAINTEXT"
+  KAFKA_REQUIRED_ACKS: "1"
+  KAFKA_COMPRESSION: "snappy"
+  KAFKA_FLUSH_MESSAGES: "1000"
+  KAFKA_FLUSH_BYTES: "1048576"
+  KAFKA_FLUSH_FREQUENCY_MS: "5"
   KAFKA_TOPIC_TELEMETRY_RAW: "anchr.mqtt.telemetry.raw.v1"
   KAFKA_TOPIC_TX_RAW: "anchr.mqtt.tx.raw.v1"
   KAFKA_TOPIC_ACK_RAW: "anchr.mqtt.ack.raw.v1"

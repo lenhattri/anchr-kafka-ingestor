@@ -20,7 +20,7 @@ func TestParseTopic(t *testing.T) {
 
 func TestValidateEnvelope(t *testing.T) {
 	seq := int64(1)
-	info := TopicInfo{TenantID: "tenant-a", StationID: "station-b", PumpID: "pump-c", DeviceID: "station-b:pump-c"}
+	info := TopicInfo{TenantID: "tenant-a", StationID: "station-b", PumpID: "pump-c", DeviceID: "station-b:pump-c", Type: "telemetry"}
 	env := Envelope{
 		Schema:        "anchr",
 		SchemaVersion: 1,

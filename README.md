@@ -40,6 +40,10 @@ Use `.env.example` as a starting point.
 - `LOG_LEVEL` (default `info`)
 - `HTTP_ADDR` (default `:8080`)
 - `INGEST_BUFFER_SIZE` (default `1000`) – bounded MQTT -> Kafka buffer size
+- `INGEST_WORKERS` (default `max(4, 2*CPU)`) – number of parallel ingest workers
+- `INGEST_WORKER_BUFFER_SIZE` (default `max(128, INGEST_BUFFER_SIZE/INGEST_WORKERS)`) – per-worker queue depth
+- `INGEST_BATCH_SIZE` (default `500`) – max batch size per worker
+- `INGEST_BATCH_LINGER_MS` (default `5`) – max wait before flushing a batch
 
 ### MQTT
 - `MQTT_BROKER_HOST` (required)
@@ -52,6 +56,8 @@ Use `.env.example` as a starting point.
 - `MQTT_QOS` (default `1`)
 - `MQTT_TOPIC_PREFIX` (default `anchr/v1`)
 - `MQTT_SUB_FILTERS` (optional comma-separated override list)
+- `MQTT_SHARED_SUBSCRIPTION_GROUP` (optional; enables shared subscriptions for horizontal scaling)
+- `MQTT_ORDER_MATTERS` (default `true`; set `false` for higher throughput at the cost of ordering guarantees)
 
 ### Kafka
 - `KAFKA_BROKERS` (comma-separated, required)
@@ -64,10 +70,21 @@ Use `.env.example` as a starting point.
 - `KAFKA_TLS_CERT_FILE`
 - `KAFKA_TLS_KEY_FILE`
 - `KAFKA_TLS_SKIP_VERIFY`
+- `KAFKA_REQUIRED_ACKS` (`all`, `1`, `0`) – durability vs throughput tradeoff
+- `KAFKA_COMPRESSION` (`none`, `snappy`, `gzip`, `lz4`, `zstd`)
+- `KAFKA_FLUSH_MESSAGES` (batching threshold; default `0` = flush ASAP)
+- `KAFKA_FLUSH_BYTES` (batching threshold; default `0` = flush ASAP)
+- `KAFKA_FLUSH_FREQUENCY_MS` (batching interval; default `0` = flush ASAP)
+- `KAFKA_MAX_MESSAGE_BYTES` (optional override)
 - `KAFKA_TOPIC_TELEMETRY_RAW` (default `anchr.mqtt.telemetry.raw.v1`)
 - `KAFKA_TOPIC_TX_RAW` (default `anchr.mqtt.tx.raw.v1`)
 - `KAFKA_TOPIC_ACK_RAW` (default `anchr.mqtt.ack.raw.v1`)
 - `KAFKA_TOPIC_DLQ` (default `anchr.dlq.v1`)
+
+## Scaling Notes
+- Use shared subscriptions via `MQTT_SHARED_SUBSCRIPTION_GROUP` to load-balance across replicas (without it, each replica receives all messages).
+- Ensure Kafka topics have enough partitions to match peak throughput and the number of ingest workers.
+- Increase `INGEST_WORKERS`, batching, and flush settings to achieve >10k TPS, and scale with HPA.
 
 ## Local Development
 1. Copy env file and adjust for your environment:
@@ -117,5 +134,4 @@ A suggested integration test flow:
 
 ## Architecture Notes
 See [docs/architecture.md](docs/architecture.md) for flow details.
-
 

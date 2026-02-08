@@ -28,6 +28,12 @@ type Config struct {
 	TLSCertFile      string
 	TLSKeyFile       string
 	TLSSkipVerify    bool
+	RequiredAcks     string
+	Compression      string
+	FlushBytes       int
+	FlushMessages    int
+	FlushFrequencyMs int
+	MaxMessageBytes  int
 }
 
 type Producer struct {
@@ -44,12 +50,39 @@ type Message struct {
 	Time  time.Time
 }
 
+type BatchMessageError struct {
+	Index int
+	Err   error
+}
+
+type BatchPublishError struct {
+	Errors []BatchMessageError
+}
+
+func (e BatchPublishError) Error() string {
+	return fmt.Sprintf("kafka batch publish failed: %d messages", len(e.Errors))
+}
+
 func NewProducer(cfg Config) (*Producer, error) {
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.ClientID = cfg.ClientID
+	saramaConfig.Producer.Return.Errors = true
 	saramaConfig.Producer.Return.Successes = true
-	saramaConfig.Producer.RequiredAcks = sarama.WaitForAll
+	saramaConfig.Producer.RequiredAcks = parseRequiredAcks(cfg.RequiredAcks)
 	saramaConfig.Producer.Retry.Max = 5
+	saramaConfig.Producer.Compression = parseCompression(cfg.Compression)
+	if cfg.FlushBytes > 0 {
+		saramaConfig.Producer.Flush.Bytes = cfg.FlushBytes
+	}
+	if cfg.FlushMessages > 0 {
+		saramaConfig.Producer.Flush.Messages = cfg.FlushMessages
+	}
+	if cfg.FlushFrequencyMs > 0 {
+		saramaConfig.Producer.Flush.Frequency = time.Duration(cfg.FlushFrequencyMs) * time.Millisecond
+	}
+	if cfg.MaxMessageBytes > 0 {
+		saramaConfig.Producer.MaxMessageBytes = cfg.MaxMessageBytes
+	}
 	saramaConfig.Net.WriteTimeout = 10 * time.Second
 	saramaConfig.Net.ReadTimeout = 10 * time.Second
 
@@ -87,10 +120,10 @@ func NewProducer(cfg Config) (*Producer, error) {
 }
 
 func (p *Producer) Publish(ctx context.Context, msg Message) error {
-	// Sarama SyncProducer doesn't take context in SendMessage directly, 
+	// Sarama SyncProducer doesn't take context in SendMessage directly,
 	// but the underlying network calls verify deadlines if set in config.
 	// For strict context cancellation support we might need AsyncProducer or check context before sending.
-	
+
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -114,6 +147,57 @@ func (p *Producer) Publish(ctx context.Context, msg Message) error {
 
 	p.setErr(nil)
 	return nil
+}
+
+func (p *Producer) PublishBatch(ctx context.Context, msgs []Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	producerMsgs := make([]*sarama.ProducerMessage, len(msgs))
+	for idx, msg := range msgs {
+		pm := &sarama.ProducerMessage{
+			Topic:    msg.Topic,
+			Value:    sarama.ByteEncoder(msg.Value),
+			Metadata: idx,
+		}
+		if len(msg.Key) > 0 {
+			pm.Key = sarama.ByteEncoder(msg.Key)
+		}
+		if !msg.Time.IsZero() {
+			pm.Timestamp = msg.Time
+		}
+		producerMsgs[idx] = pm
+	}
+
+	err := p.producer.SendMessages(producerMsgs)
+	if err == nil {
+		p.setErr(nil)
+		return nil
+	}
+
+	p.setErr(err)
+	if producerErrors, ok := err.(sarama.ProducerErrors); ok {
+		batchErr := BatchPublishError{Errors: make([]BatchMessageError, 0, len(producerErrors))}
+		for _, producerErr := range producerErrors {
+			index := -1
+			if producerErr.Msg != nil {
+				if metaIdx, ok := producerErr.Msg.Metadata.(int); ok {
+					index = metaIdx
+				}
+			}
+			batchErr.Errors = append(batchErr.Errors, BatchMessageError{
+				Index: index,
+				Err:   producerErr.Err,
+			})
+		}
+		return batchErr
+	}
+
+	return err
 }
 
 func (p *Producer) Close() error {
@@ -216,4 +300,34 @@ func (x *XDGSCRAMClient) Step(challenge string) (response string, err error) {
 
 func (x *XDGSCRAMClient) Done() bool {
 	return x.ClientConversation.Done()
+}
+
+func parseRequiredAcks(value string) sarama.RequiredAcks {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "all", "-1":
+		return sarama.WaitForAll
+	case "1", "local", "leader":
+		return sarama.WaitForLocal
+	case "0", "none":
+		return sarama.NoResponse
+	default:
+		return sarama.WaitForAll
+	}
+}
+
+func parseCompression(value string) sarama.CompressionCodec {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "none":
+		return sarama.CompressionNone
+	case "gzip":
+		return sarama.CompressionGZIP
+	case "snappy":
+		return sarama.CompressionSnappy
+	case "lz4":
+		return sarama.CompressionLZ4
+	case "zstd":
+		return sarama.CompressionZSTD
+	default:
+		return sarama.CompressionNone
+	}
 }

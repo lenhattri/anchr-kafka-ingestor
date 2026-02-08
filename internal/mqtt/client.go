@@ -24,16 +24,18 @@ type Client struct {
 }
 
 type Config struct {
-	BrokerHost  string
-	BrokerPort  int
-	Username    string
-	Password    string
-	UseTLS      bool
-	CAFile      string
-	ClientID    string
-	QoS         byte
-	TopicPrefix string
-	SubFilters  []string
+	BrokerHost              string
+	BrokerPort              int
+	Username                string
+	Password                string
+	UseTLS                  bool
+	CAFile                  string
+	ClientID                string
+	QoS                     byte
+	TopicPrefix             string
+	SubFilters              []string
+	SharedSubscriptionGroup string
+	OrderMatters            bool
 }
 
 type Handlers struct {
@@ -60,6 +62,7 @@ func New(cfg Config, handlers Handlers) (*Client, error) {
 	opts.SetKeepAlive(30 * time.Second)
 	opts.SetPingTimeout(10 * time.Second)
 	opts.SetCleanSession(true)
+	opts.SetOrderMatters(cfg.OrderMatters)
 
 	client := &Client{}
 
@@ -119,6 +122,9 @@ func (c *Client) ConnectAndSubscribe(cfg Config) error {
 			fmt.Sprintf("%s/+/+/+/event", base),
 		}
 	}
+	for idx, filter := range filters {
+		filters[idx] = applySharedSubscription(cfg.SharedSubscriptionGroup, filter)
+	}
 
 	subscriptions := make(map[string]byte, len(filters))
 	for _, filter := range filters {
@@ -150,4 +156,15 @@ func buildTLSConfig(caFile string) (*tls.Config, error) {
 	}
 	tlsConfig.RootCAs = pool
 	return tlsConfig, nil
+}
+
+func applySharedSubscription(group, filter string) string {
+	if group == "" {
+		return filter
+	}
+	if strings.HasPrefix(filter, "$share/") {
+		return filter
+	}
+	trimmed := strings.TrimPrefix(filter, "/")
+	return fmt.Sprintf("$share/%s/%s", group, trimmed)
 }
