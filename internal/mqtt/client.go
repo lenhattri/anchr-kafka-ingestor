@@ -74,8 +74,31 @@ func New(cfg Config, handlers Handlers) (*Client, error) {
 		opts.SetTLSConfig(tlsConfig)
 	}
 
-	opts.OnConnect = func(_ paho.Client) {
+	opts.OnConnect = func(pc paho.Client) {
 		client.connected.Store(true)
+
+		filters := cfg.SubFilters
+		if len(filters) == 0 {
+			base := strings.TrimSuffix(cfg.TopicPrefix, "/")
+			filters = []string{
+				fmt.Sprintf("%s/+/+/+/telemetry", base),
+				fmt.Sprintf("%s/+/+/+/state", base),
+				fmt.Sprintf("%s/+/+/+/tx", base),
+				fmt.Sprintf("%s/+/+/+/ack", base),
+				fmt.Sprintf("%s/+/+/+/event", base),
+			}
+		}
+		for idx, filter := range filters {
+			filters[idx] = applySharedSubscription(cfg.SharedSubscriptionGroup, filter)
+		}
+
+		subscriptions := make(map[string]byte, len(filters))
+		for _, filter := range filters {
+			subscriptions[filter] = cfg.QoS
+		}
+
+		pc.SubscribeMultiple(subscriptions, nil)
+
 		if handlers.OnConnect != nil {
 			handlers.OnConnect()
 		}
@@ -106,32 +129,8 @@ func New(cfg Config, handlers Handlers) (*Client, error) {
 	return client, nil
 }
 
-func (c *Client) ConnectAndSubscribe(cfg Config) error {
+func (c *Client) Connect(cfg Config) error {
 	if token := c.client.Connect(); token.Wait() && token.Error() != nil {
-		return token.Error()
-	}
-
-	filters := cfg.SubFilters
-	if len(filters) == 0 {
-		base := strings.TrimSuffix(cfg.TopicPrefix, "/")
-		filters = []string{
-			fmt.Sprintf("%s/+/+/+/telemetry", base),
-			fmt.Sprintf("%s/+/+/+/state", base),
-			fmt.Sprintf("%s/+/+/+/tx", base),
-			fmt.Sprintf("%s/+/+/+/ack", base),
-			fmt.Sprintf("%s/+/+/+/event", base),
-		}
-	}
-	for idx, filter := range filters {
-		filters[idx] = applySharedSubscription(cfg.SharedSubscriptionGroup, filter)
-	}
-
-	subscriptions := make(map[string]byte, len(filters))
-	for _, filter := range filters {
-		subscriptions[filter] = cfg.QoS
-	}
-
-	if token := c.client.SubscribeMultiple(subscriptions, nil); token.Wait() && token.Error() != nil {
 		return token.Error()
 	}
 	return nil

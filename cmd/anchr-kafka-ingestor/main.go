@@ -103,8 +103,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := mqttClient.ConnectAndSubscribe(toMQTTConfig(cfg.MQTT)); err != nil {
-		logger.Error("failed to connect or subscribe mqtt", slog.Any("error", err))
+	if err := mqttClient.Connect(toMQTTConfig(cfg.MQTT)); err != nil {
+		logger.Error("failed to connect to mqtt", slog.Any("error", err))
 		os.Exit(1)
 	}
 
