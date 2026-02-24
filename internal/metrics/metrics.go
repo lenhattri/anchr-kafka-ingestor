@@ -10,6 +10,11 @@ type Metrics struct {
 	ReconnectTotal         prometheus.Counter
 	KafkaPublishLatency    prometheus.Histogram
 	EndToEndLatency        prometheus.Histogram
+
+	// Sequence integrity metrics
+	SequenceGapsTotal       *prometheus.CounterVec
+	SequenceDuplicatesTotal *prometheus.CounterVec
+	TrackedDevices          prometheus.Gauge
 }
 
 func New() *Metrics {
@@ -44,6 +49,18 @@ func New() *Metrics {
 			Help:    "End-to-end ingest latency in milliseconds.",
 			Buckets: []float64{10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000},
 		}),
+		SequenceGapsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "sequence_gaps_total",
+			Help: "Total missing sequence numbers detected, labeled by station.",
+		}, []string{"station"}),
+		SequenceDuplicatesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "sequence_duplicates_total",
+			Help: "Total duplicate/out-of-order messages detected, labeled by station.",
+		}, []string{"station"}),
+		TrackedDevices: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "tracked_devices_total",
+			Help: "Number of devices currently tracked for sequence integrity.",
+		}),
 	}
 
 	prometheus.MustRegister(
@@ -54,6 +71,9 @@ func New() *Metrics {
 		metrics.ReconnectTotal,
 		metrics.KafkaPublishLatency,
 		metrics.EndToEndLatency,
+		metrics.SequenceGapsTotal,
+		metrics.SequenceDuplicatesTotal,
+		metrics.TrackedDevices,
 	)
 
 	return metrics

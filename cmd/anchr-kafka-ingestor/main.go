@@ -17,6 +17,7 @@ import (
 	"anchr-kafka-ingestor/internal/metrics"
 	"anchr-kafka-ingestor/internal/mqtt"
 	"anchr-kafka-ingestor/internal/router"
+	"anchr-kafka-ingestor/internal/seqtracker"
 )
 
 type DLQRecord struct {
@@ -126,6 +127,8 @@ func main() {
 		batchLinger = 0
 	}
 
+	seqTracker := seqtracker.New()
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -136,7 +139,7 @@ func main() {
 		wg.Add(1)
 		go func(workerID int, ch <-chan ingestJob) {
 			defer wg.Done()
-			processMessages(ctx, logger, metricsCollector, producer, topics, cfg.IngestBatchSize, batchLinger, ch)
+			processMessages(ctx, logger, metricsCollector, seqTracker, producer, topics, cfg.IngestBatchSize, batchLinger, ch)
 		}(idx, workerChans[idx])
 	}
 
@@ -149,6 +152,7 @@ func processMessages(
 	ctx context.Context,
 	logger *slog.Logger,
 	metricsCollector *metrics.Metrics,
+	seqTracker *seqtracker.Tracker,
 	producer *kafka.Producer,
 	topics router.Topics,
 	batchSize int,
@@ -191,6 +195,24 @@ func processMessages(
 			if err := router.ValidateEnvelope(env, job.info); err != nil {
 				sendToDLQ(ctx, logger, metricsCollector, producer, topics.DLQ, job.msg, "validation", err, job.info.DeviceID)
 				continue
+			}
+
+			// Sequence integrity tracking
+			if env.Seq != nil {
+				result := seqTracker.Track(job.info.DeviceID, *env.Seq)
+				station := job.info.StationID
+				if result.GapSize > 0 {
+					metricsCollector.SequenceGapsTotal.WithLabelValues(station).Add(float64(result.GapSize))
+					logger.Warn("sequence gap detected",
+						slog.String("device_id", job.info.DeviceID),
+						slog.Int64("seq", *env.Seq),
+						slog.Int64("gap_size", result.GapSize),
+					)
+				}
+				if result.Duplicate {
+					metricsCollector.SequenceDuplicatesTotal.WithLabelValues(station).Inc()
+				}
+				metricsCollector.TrackedDevices.Set(float64(seqTracker.DeviceCount()))
 			}
 
 			topic, err := router.RouteKafkaTopic(job.info.Type, topics)
