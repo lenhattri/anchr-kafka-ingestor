@@ -43,11 +43,17 @@ type Producer struct {
 	lastErr  error
 }
 
-type Message struct {
-	Topic string
-	Key   []byte
+type MessageHeader struct {
+	Key   string
 	Value []byte
-	Time  time.Time
+}
+
+type Message struct {
+	Topic   string
+	Key     []byte
+	Value   []byte
+	Time    time.Time
+	Headers []MessageHeader
 }
 
 type BatchMessageError struct {
@@ -138,6 +144,12 @@ func (p *Producer) Publish(ctx context.Context, msg Message) error {
 	if !msg.Time.IsZero() {
 		pm.Timestamp = msg.Time
 	}
+	for _, h := range msg.Headers {
+		pm.Headers = append(pm.Headers, sarama.RecordHeader{
+			Key:   []byte(h.Key),
+			Value: h.Value,
+		})
+	}
 
 	_, _, err := p.producer.SendMessage(pm)
 	if err != nil {
@@ -169,6 +181,12 @@ func (p *Producer) PublishBatch(ctx context.Context, msgs []Message) error {
 		}
 		if !msg.Time.IsZero() {
 			pm.Timestamp = msg.Time
+		}
+		for _, h := range msg.Headers {
+			pm.Headers = append(pm.Headers, sarama.RecordHeader{
+				Key:   []byte(h.Key),
+				Value: h.Value,
+			})
 		}
 		producerMsgs[idx] = pm
 	}

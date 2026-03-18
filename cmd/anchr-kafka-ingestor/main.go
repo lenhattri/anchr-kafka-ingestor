@@ -222,6 +222,10 @@ func processMessages(
 				Key:   []byte(item.job.info.DeviceID),
 				Value: item.job.msg.Payload,
 				Time:  now,
+				Headers: []kafka.MessageHeader{
+					{Key: "message_id", Value: []byte(item.env.MessageID)},
+					{Key: "device_id", Value: []byte(item.env.DeviceID)},
+				},
 			}
 		}
 
