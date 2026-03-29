@@ -100,6 +100,13 @@ func TestProcessMessagesUsesMQTTReceiptTimeForEndToEndLatency(t *testing.T) {
 	if got := hist.GetSampleSum(); got < 1000 || got > 5000 {
 		t.Fatalf("sample_sum=%fms, want latency from MQTT receipt, not event_time", got)
 	}
+	preKafkaHist := histogramSnapshot(t, metricsCollector.IngestPreKafkaLatency)
+	if got := preKafkaHist.GetSampleCount(); got != 1 {
+		t.Fatalf("pre_kafka_sample_count=%d, want 1", got)
+	}
+	if got := preKafkaHist.GetSampleSum(); got < 1000 || got > hist.GetSampleSum() {
+		t.Fatalf("pre_kafka_sample_sum=%fms, want measured latency before kafka publish completes", got)
+	}
 	if got := len(producer.batches); got != 1 {
 		t.Fatalf("published_batches=%d, want 1", got)
 	}
@@ -159,9 +166,16 @@ func TestProcessMessagesSkipsEndToEndLatencyWhenReceiptTimeMissing(t *testing.T)
 	if got := hist.GetSampleCount(); got != 0 {
 		t.Fatalf("sample_count=%d, want 0 when receipt time is missing", got)
 	}
+	preKafkaHist := histogramSnapshot(t, metricsCollector.IngestPreKafkaLatency)
+	if got := preKafkaHist.GetSampleCount(); got != 0 {
+		t.Fatalf("pre_kafka_sample_count=%d, want 0 when receipt time is missing", got)
+	}
 }
 
 func newTestMetrics() *metrics.Metrics {
+	ingestLatencyBuckets := []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000}
+	kafkaPublishLatencyBuckets := []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000}
+
 	return &metrics.Metrics{
 		MQTTMessagesReceived: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "mqtt_messages_received_total",
@@ -183,15 +197,20 @@ func newTestMetrics() *metrics.Metrics {
 			Name: "reconnect_total",
 			Help: "Total MQTT reconnect attempts.",
 		}),
+		IngestPreKafkaLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "ingest_pre_kafka_latency_ms",
+			Help:    "Ingest latency from MQTT receipt to Kafka publish start in milliseconds.",
+			Buckets: ingestLatencyBuckets,
+		}),
 		KafkaPublishLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "kafka_publish_latency_ms",
 			Help:    "Kafka publish latency in milliseconds.",
-			Buckets: []float64{5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000},
+			Buckets: kafkaPublishLatencyBuckets,
 		}),
 		EndToEndLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "end_to_end_ingest_latency_ms",
 			Help:    "Ingest latency from MQTT receipt to Kafka publish in milliseconds.",
-			Buckets: []float64{10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000},
+			Buckets: ingestLatencyBuckets,
 		}),
 	}
 }

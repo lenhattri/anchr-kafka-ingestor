@@ -232,9 +232,20 @@ func processMessages(
 			}
 		}
 
-		start := time.Now()
+		publishStartedAt := time.Now()
+		for _, item := range publishItems {
+			if item.job.msg.ReceivedAt.IsZero() {
+				continue
+			}
+			latency := publishStartedAt.Sub(item.job.msg.ReceivedAt).Milliseconds()
+			if latency >= 0 {
+				metricsCollector.IngestPreKafkaLatency.Observe(float64(latency))
+			}
+		}
+
 		publishErr := producer.PublishBatch(ctx, kafkaMessages)
-		latencyMs := float64(time.Since(start).Milliseconds())
+		publishCompletedAt := time.Now()
+		latencyMs := float64(publishCompletedAt.Sub(publishStartedAt).Milliseconds())
 
 		var failed map[int]error
 		if publishErr != nil {
@@ -277,7 +288,7 @@ func processMessages(
 
 			metricsCollector.KafkaMessagesPublished.WithLabelValues(item.topic).Inc()
 			if !item.job.msg.ReceivedAt.IsZero() {
-				latency := time.Since(item.job.msg.ReceivedAt).Milliseconds()
+				latency := publishCompletedAt.Sub(item.job.msg.ReceivedAt).Milliseconds()
 				if latency >= 0 {
 					metricsCollector.EndToEndLatency.Observe(float64(latency))
 				}

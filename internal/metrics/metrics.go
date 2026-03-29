@@ -8,11 +8,15 @@ type Metrics struct {
 	PublishErrors          *prometheus.CounterVec
 	DLQTotal               *prometheus.CounterVec
 	ReconnectTotal         prometheus.Counter
+	IngestPreKafkaLatency  prometheus.Histogram
 	KafkaPublishLatency    prometheus.Histogram
 	EndToEndLatency        prometheus.Histogram
 }
 
 func New() *Metrics {
+	ingestLatencyBuckets := []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000}
+	kafkaPublishLatencyBuckets := []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000}
+
 	metrics := &Metrics{
 		MQTTMessagesReceived: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "mqtt_messages_received_total",
@@ -34,15 +38,20 @@ func New() *Metrics {
 			Name: "reconnect_total",
 			Help: "Total MQTT reconnect attempts.",
 		}),
+		IngestPreKafkaLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "ingest_pre_kafka_latency_ms",
+			Help:    "Ingest latency from MQTT receipt to Kafka publish start in milliseconds.",
+			Buckets: ingestLatencyBuckets,
+		}),
 		KafkaPublishLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "kafka_publish_latency_ms",
 			Help:    "Kafka publish latency in milliseconds.",
-			Buckets: []float64{5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000},
+			Buckets: kafkaPublishLatencyBuckets,
 		}),
 		EndToEndLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "end_to_end_ingest_latency_ms",
 			Help:    "Ingest latency from MQTT receipt to Kafka publish in milliseconds.",
-			Buckets: []float64{10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000},
+			Buckets: ingestLatencyBuckets,
 		}),
 	}
 
@@ -52,6 +61,7 @@ func New() *Metrics {
 		metrics.PublishErrors,
 		metrics.DLQTotal,
 		metrics.ReconnectTotal,
+		metrics.IngestPreKafkaLatency,
 		metrics.KafkaPublishLatency,
 		metrics.EndToEndLatency,
 	)
