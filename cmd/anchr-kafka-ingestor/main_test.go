@@ -107,6 +107,17 @@ func TestProcessMessagesUsesMQTTReceiptTimeForEndToEndLatency(t *testing.T) {
 	if got := preKafkaHist.GetSampleSum(); got < 1000 || got > hist.GetSampleSum() {
 		t.Fatalf("pre_kafka_sample_sum=%fms, want measured latency before kafka publish completes", got)
 	}
+	queueHist := histogramSnapshot(t, metricsCollector.IngestQueueLatency)
+	if got := queueHist.GetSampleCount(); got != 1 {
+		t.Fatalf("queue_sample_count=%d, want 1", got)
+	}
+	processingHist := histogramSnapshot(t, metricsCollector.IngestProcessingLatency)
+	if got := processingHist.GetSampleCount(); got != 1 {
+		t.Fatalf("processing_sample_count=%d, want 1", got)
+	}
+	if got := queueHist.GetSampleSum() + processingHist.GetSampleSum(); got > preKafkaHist.GetSampleSum()+25 {
+		t.Fatalf("queue+processing=%fms, want close to pre-kafka latency %fms", got, preKafkaHist.GetSampleSum())
+	}
 	if got := len(producer.batches); got != 1 {
 		t.Fatalf("published_batches=%d, want 1", got)
 	}
@@ -170,11 +181,27 @@ func TestProcessMessagesSkipsEndToEndLatencyWhenReceiptTimeMissing(t *testing.T)
 	if got := preKafkaHist.GetSampleCount(); got != 0 {
 		t.Fatalf("pre_kafka_sample_count=%d, want 0 when receipt time is missing", got)
 	}
+	queueHist := histogramSnapshot(t, metricsCollector.IngestQueueLatency)
+	if got := queueHist.GetSampleCount(); got != 0 {
+		t.Fatalf("queue_sample_count=%d, want 0 when receipt time is missing", got)
+	}
+	processingHist := histogramSnapshot(t, metricsCollector.IngestProcessingLatency)
+	if got := processingHist.GetSampleCount(); got != 1 {
+		t.Fatalf("processing_sample_count=%d, want 1 because dequeue to publish still happened", got)
+	}
 }
 
 func newTestMetrics() *metrics.Metrics {
-	ingestLatencyBuckets := []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000}
-	kafkaPublishLatencyBuckets := []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000}
+	ingestLatencyBuckets := []float64{
+		1, 2, 5, 10, 15, 20, 30, 40, 50, 75, 100,
+		125, 150, 175, 200, 225, 250, 300, 400, 500,
+		750, 1000, 1500, 2000, 2500, 5000, 10000, 30000, 60000,
+	}
+	kafkaPublishLatencyBuckets := []float64{
+		1, 2, 5, 10, 15, 20, 30, 40, 50, 75, 100,
+		125, 150, 175, 200, 225, 250, 300, 400, 500,
+		750, 1000, 1500, 2000, 2500, 5000, 10000, 30000, 60000,
+	}
 
 	return &metrics.Metrics{
 		MQTTMessagesReceived: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -196,6 +223,16 @@ func newTestMetrics() *metrics.Metrics {
 		ReconnectTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "reconnect_total",
 			Help: "Total MQTT reconnect attempts.",
+		}),
+		IngestQueueLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "ingest_queue_latency_ms",
+			Help:    "Ingest latency from MQTT receipt to worker dequeue in milliseconds.",
+			Buckets: ingestLatencyBuckets,
+		}),
+		IngestProcessingLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "ingest_processing_latency_ms",
+			Help:    "Ingest latency from worker dequeue to Kafka publish start in milliseconds.",
+			Buckets: ingestLatencyBuckets,
 		}),
 		IngestPreKafkaLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "ingest_pre_kafka_latency_ms",

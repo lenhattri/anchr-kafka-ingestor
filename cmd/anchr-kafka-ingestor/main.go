@@ -29,8 +29,9 @@ type DLQRecord struct {
 }
 
 type ingestJob struct {
-	msg  mqtt.Message
-	info router.TopicInfo
+	msg        mqtt.Message
+	info       router.TopicInfo
+	dequeuedAt time.Time
 }
 
 type producerClient interface {
@@ -234,18 +235,24 @@ func processMessages(
 
 		publishStartedAt := time.Now()
 		for _, item := range publishItems {
+			if !item.job.dequeuedAt.IsZero() {
+				latency := durationMillis(publishStartedAt.Sub(item.job.dequeuedAt))
+				if latency >= 0 {
+					metricsCollector.IngestProcessingLatency.Observe(latency)
+				}
+			}
 			if item.job.msg.ReceivedAt.IsZero() {
 				continue
 			}
-			latency := publishStartedAt.Sub(item.job.msg.ReceivedAt).Milliseconds()
+			latency := durationMillis(publishStartedAt.Sub(item.job.msg.ReceivedAt))
 			if latency >= 0 {
-				metricsCollector.IngestPreKafkaLatency.Observe(float64(latency))
+				metricsCollector.IngestPreKafkaLatency.Observe(latency)
 			}
 		}
 
 		publishErr := producer.PublishBatch(ctx, kafkaMessages)
 		publishCompletedAt := time.Now()
-		latencyMs := float64(publishCompletedAt.Sub(publishStartedAt).Milliseconds())
+		latencyMs := durationMillis(publishCompletedAt.Sub(publishStartedAt))
 
 		var failed map[int]error
 		if publishErr != nil {
@@ -288,9 +295,9 @@ func processMessages(
 
 			metricsCollector.KafkaMessagesPublished.WithLabelValues(item.topic).Inc()
 			if !item.job.msg.ReceivedAt.IsZero() {
-				latency := publishCompletedAt.Sub(item.job.msg.ReceivedAt).Milliseconds()
+				latency := durationMillis(publishCompletedAt.Sub(item.job.msg.ReceivedAt))
 				if latency >= 0 {
-					metricsCollector.EndToEndLatency.Observe(float64(latency))
+					metricsCollector.EndToEndLatency.Observe(latency)
 				}
 			}
 		}
@@ -305,6 +312,13 @@ func processMessages(
 			if !ok {
 				flush(batch)
 				return
+			}
+			job.dequeuedAt = time.Now().UTC()
+			if !job.msg.ReceivedAt.IsZero() {
+				latency := durationMillis(job.dequeuedAt.Sub(job.msg.ReceivedAt))
+				if latency >= 0 {
+					metricsCollector.IngestQueueLatency.Observe(latency)
+				}
 			}
 			batch = append(batch, job)
 			if len(batch) == 1 && batchLinger > 0 {
@@ -392,6 +406,10 @@ func workerIndex(deviceID string, workerCount int) int {
 		hash *= prime32
 	}
 	return int(hash % uint32(workerCount))
+}
+
+func durationMillis(d time.Duration) float64 {
+	return float64(d) / float64(time.Millisecond)
 }
 
 func sendToDLQ(
