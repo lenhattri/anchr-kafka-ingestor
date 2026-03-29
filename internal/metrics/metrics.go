@@ -10,7 +10,6 @@ type Metrics struct {
 	ReconnectTotal         prometheus.Counter
 	KafkaPublishLatency    prometheus.Histogram
 	EndToEndLatency        prometheus.Histogram
-
 }
 
 func New() *Metrics {
@@ -42,7 +41,7 @@ func New() *Metrics {
 		}),
 		EndToEndLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "end_to_end_ingest_latency_ms",
-			Help:    "End-to-end ingest latency in milliseconds.",
+			Help:    "Ingest latency from MQTT receipt to Kafka publish in milliseconds.",
 			Buckets: []float64{10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000},
 		}),
 	}

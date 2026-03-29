@@ -33,6 +33,13 @@ type ingestJob struct {
 	info router.TopicInfo
 }
 
+type producerClient interface {
+	Publish(context.Context, kafka.Message) error
+	PublishBatch(context.Context, []kafka.Message) error
+	Ready(context.Context) bool
+	Close() error
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -126,8 +133,6 @@ func main() {
 		batchLinger = 0
 	}
 
-
-
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -151,8 +156,7 @@ func processMessages(
 	ctx context.Context,
 	logger *slog.Logger,
 	metricsCollector *metrics.Metrics,
-
-	producer *kafka.Producer,
+	producer producerClient,
 	topics router.Topics,
 	batchSize int,
 	batchLinger time.Duration,
@@ -195,7 +199,6 @@ func processMessages(
 				sendToDLQ(ctx, logger, metricsCollector, producer, topics.DLQ, job.msg, "validation", err, job.info.DeviceID)
 				continue
 			}
-
 
 			topic, err := router.RouteKafkaTopic(job.info.Type, topics)
 			if err != nil {
@@ -273,12 +276,10 @@ func processMessages(
 			}
 
 			metricsCollector.KafkaMessagesPublished.WithLabelValues(item.topic).Inc()
-			if item.env.EventTime != "" {
-				if parsedTime, err := time.Parse(time.RFC3339Nano, item.env.EventTime); err == nil {
-					latency := time.Since(parsedTime).Milliseconds()
-					if latency >= 0 {
-						metricsCollector.EndToEndLatency.Observe(float64(latency))
-					}
+			if !item.job.msg.ReceivedAt.IsZero() {
+				latency := time.Since(item.job.msg.ReceivedAt).Milliseconds()
+				if latency >= 0 {
+					metricsCollector.EndToEndLatency.Observe(float64(latency))
 				}
 			}
 		}
@@ -329,7 +330,7 @@ func dispatchMessages(
 	ctx context.Context,
 	logger *slog.Logger,
 	metricsCollector *metrics.Metrics,
-	producer *kafka.Producer,
+	producer producerClient,
 	topics router.Topics,
 	topicPrefix string,
 	messages <-chan mqtt.Message,
@@ -386,7 +387,7 @@ func sendToDLQ(
 	ctx context.Context,
 	logger *slog.Logger,
 	metricsCollector *metrics.Metrics,
-	producer *kafka.Producer,
+	producer producerClient,
 	dlqTopic string,
 	msg mqtt.Message,
 	reason string,
